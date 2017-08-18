@@ -2,27 +2,26 @@ package io.mycat.mycat2.net;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
-import io.mycat.mycat2.sqlparser.NewSQLContext;
-import io.mycat.mycat2.sqlparser.NewSQLParser;
-import io.mycat.mysql.packet.MySQLPacket;
-import io.mycat.mycat2.beans.MySQLDataSource;
-import io.mycat.mycat2.cmds.QueryCmdProcessImpl;
-import io.mycat.mycat2.cmds.SQLComandProcessInf;
-import io.mycat.proxy.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.mycat.mycat2.MySQLSession;
+import io.mycat.mycat2.beans.MySQLDataSource;
+import io.mycat.mycat2.cmds.QueryCmdProcessImpl;
+import io.mycat.mycat2.cmds.SQLComandProcessInf;
 import io.mycat.mycat2.tasks.BackendConCreateTask;
 import io.mycat.mycat2.tasks.BackendSynchronzationTask;
 import io.mycat.mysql.packet.ErrorPacket;
+import io.mycat.mysql.packet.MySQLPacket;
+import io.mycat.proxy.BackendIOHandler;
+import io.mycat.proxy.FrontIOHandler;
+import io.mycat.proxy.ProxyBuffer;
+import io.mycat.proxy.UserProxySession;
 
 /**
  * 负责MycatSession的NIO事件，驱动SQLCommand命令执行，完成SQL的处理过程
@@ -68,11 +67,11 @@ public class DefaultMycatSessionHandler implements FrontIOHandler<MySQLSession>,
 		}
 		if (session.backendChannel == null) {
 			// todo ，从连接池中获取连接，获取不到后创建新连接，
-			final MySQLDataSource datas = session.getDatasource();
+			final MySQLDataSource ds = session.getDatasource();
 
 			logger.info("hang cur sql for  backend connection ready ");
-			String serverIP = datas.getConfig().getIp();
-			int serverPort = datas.getConfig().getPort();
+			String serverIP = ds.getConfig().getIp();
+			int serverPort = ds.getConfig().getPort();
 			InetSocketAddress serverAddress = new InetSocketAddress(serverIP, serverPort);
 			session.backendChannel = SocketChannel.open();
 			session.backendChannel.configureBlocking(false);
@@ -82,7 +81,7 @@ public class DefaultMycatSessionHandler implements FrontIOHandler<MySQLSession>,
 			session.backendKey = selectKey;
 			logger.info("Connecting to server " + serverIP + ":" + serverPort);
 
-			BackendConCreateTask authProcessor = new BackendConCreateTask(session, null);
+			BackendConCreateTask authProcessor = new BackendConCreateTask(session, ds);
 			authProcessor.setCallback((optSession, Sender, exeSucces, retVal) -> {
 				if (exeSucces) {
 					// 认证成功后开始同步会话状态至后端
@@ -135,8 +134,8 @@ public class DefaultMycatSessionHandler implements FrontIOHandler<MySQLSession>,
 
 		ProxyBuffer backendBuffer = session.frontBuffer;
 
-		if (session.resolveMySQLPackage(backendBuffer, session.curFrontMSQLPackgInf, false) == false) {
-			// 没有读到完整报文
+		if (session.resolveMySQLPackage(backendBuffer, session.curFrontMSQLPackgInf, false) == false||!session.curFrontMSQLPackgInf.crossBuffer) {
+			// 没有读到完整报文, 也不是挎包
 			return;
 		}
 
