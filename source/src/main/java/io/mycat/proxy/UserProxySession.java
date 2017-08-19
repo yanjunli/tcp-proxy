@@ -60,29 +60,22 @@ public class UserProxySession extends AbstractSession {
 		buffer.position(0);
 		buffer.limit(proxyBuf.readIndex);
 		int writed = channel.write(buffer);
-		if(writed <=0||buffer.hasRemaining()){
+		if(writed ==0||buffer.hasRemaining()){
 			/**
-			 * 1. writed <0 时,尝试注册可写事件,注册失败时，需要关闭连接。
-			 *    也可能发生在写的过程中 ，连接断开的情况.
-			 *    这种情况下会报异常
-			 * 2. writed==0 或者  buffer 中数据没有写完时,注册可写事件
+			 * 1. writed==0 或者  buffer 中数据没有写完时,注册可写事件
 			 *    通常发生在网络阻塞或者 客户端  COM_STMT_FETCH 命令可能会 出现没有写完或者 writed == 0 的情况
 			 */
 			keepWrite(channel);
-			logger.info("register OP_WRITE  selectkey .write  {} bytes. current channel is {}",writed,channel);
+			logger.debug("register OP_WRITE  selectkey .write  {} bytes. current channel is {}",writed,channel);
 			int readindex = proxyBuf.readIndex - writed;
 			proxyBuf.readIndex = writed;
 			proxyBuf.compact();
 			proxyBuf.readIndex = readindex;
 			return;
 		}else{
-			logger.info("writeToChannel write  {} bytes ",writed);
-			/*
-			 * 数据写完时,切换NIO 事件
-			 */
+			logger.debug("writeToChannel write  {} bytes ",writed);
 			//从写状态切换到读状态时,需要检查对端 是否有注册可读事件
-			modifySelectKey();
-//			inReadState();  //TODO bug 持续写入完成后,需要给对端注册读状态
+			changeToReadState(channel);
 		}
 	}
 	
@@ -94,10 +87,32 @@ public class UserProxySession extends AbstractSession {
 	private void keepWrite(SocketChannel channel)throws IOException{
 		SelectionKey theKey = channel.equals(frontChannel) ? frontKey : backendKey;
 		SelectionKey otherKey = channel.equals(frontChannel) ? backendKey : frontKey;
-		logger.info("otherKey  interestOps is {} bytes ",otherKey.interestOps());
-		
-		theKey.interestOps(theKey.interestOps() | SelectionKey.OP_WRITE);
-		otherKey.interestOps(otherKey.interestOps() & ~SelectionKey.OP_READ);
+		if((theKey.interestOps() & SelectionKey.OP_WRITE) ==0){
+			theKey.interestOps(theKey.interestOps() |SelectionKey.OP_WRITE );
+		}
+		if(otherKey!=null&&otherKey.isValid()){
+			otherKey.interestOps(otherKey.interestOps() & ~SelectionKey.OP_READ);
+		}
+	}
+	
+	/**
+	 * 从对端读数据到本端
+	 * 向对端注册可读事件
+	 * @param channel
+	 * @throws IOException
+	 */
+	private void changeToReadState(SocketChannel channel)throws ClosedChannelException{
+		SelectionKey theKey = channel.equals(frontChannel) ? frontKey : backendKey;
+		SelectionKey otherKey = channel.equals(frontChannel) ? backendKey : frontKey;
+		if((theKey.interestOps() & SelectionKey.OP_WRITE) > 0){
+			theKey.interestOps(theKey.interestOps() &~SelectionKey.OP_WRITE );
+		}
+		if (otherKey != null && otherKey.isValid()) {
+			int oldOps = otherKey.interestOps();
+			if ( ( oldOps & SelectionKey.OP_READ ) == 0) {
+				otherKey.interestOps(oldOps|SelectionKey.OP_READ);
+			}
+		}
 	}
 
 	/**
@@ -182,23 +197,6 @@ public class UserProxySession extends AbstractSession {
 			int oldOps = theKey.interestOps();
 			if (oldOps != clientOps) {
 				theKey.interestOps(clientOps);
-			}
-			logger.info("current selectkey is {} ",clientOps);
-		}
-	}
-	
-	/**
-	 * 从对端读数据到本端
-	 * 向对端注册可读事件
-	 * @param channel
-	 * @throws IOException
-	 */
-	private void inReadState()throws ClosedChannelException{
-		SelectionKey otherKey = this.frontBuffer.frontUsing() ? backendKey : frontKey;
-		if (otherKey != null && otherKey.isValid()) {
-			int oldOps = otherKey.interestOps();
-			if ( ( oldOps & SelectionKey.OP_READ ) == 0) {
-				otherKey.interestOps(oldOps|SelectionKey.OP_READ);
 			}
 		}
 	}
