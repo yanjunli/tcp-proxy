@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.channels.SocketChannel;
 
 import io.mycat.mycat2.MySQLSession;
+import io.mycat.mycat2.MySQLSession.CurrPacketType;
 import io.mycat.mycat2.beans.MySQLPackageInf;
 import io.mycat.proxy.DefaultDirectProxyHandler;
 import io.mycat.proxy.ProxyBuffer;
@@ -23,31 +24,29 @@ public class DefaultMySQLStudySessionHandler extends DefaultDirectProxyHandler<M
 		ProxyBuffer peerBuf = session.frontBuffer;
 		SocketChannel peerChannel = session.backendChannel;
 		MySQLPackageInf curPkgInf = session.curFrontMSQLPackgInf;
-		if (readed == false || session.resolveMySQLPackage(peerBuf, curPkgInf,true) == false) {
+		if (readed == false ||!CurrPacketType.Full.equals(session.resolveMySQLPackage(peerBuf, curPkgInf, true))) {
 			return;
 		}
 
-		if (peerBuf.readState.hasRemain()) {
+		if (peerBuf.hasRemain()) {
 			logger.warn("front received multi packages !!!!! ");
 			processAllRemainPkg(session, peerBuf, curPkgInf);
 
 		}
 		// 透传给对端
 		peerBuf.changeOwner(false);
-		peerBuf.flip();
 		session.writeToChannel(peerBuf, peerChannel);
 		return;
-
 	}
 
 	private void processAllRemainPkg(MySQLSession session, ProxyBuffer theBuf, MySQLPackageInf curPkgInf)
 			throws IOException {
 		int pkgIndex = 2;
-		while (theBuf.readState.hasRemain() && session.resolveMySQLPackage(theBuf, curPkgInf,true) != false) {
+		while (theBuf.hasRemain() && CurrPacketType.Full.equals(session.resolveMySQLPackage(theBuf, curPkgInf, true))) {
 			logger.info(" parsed No." + pkgIndex + " package ,type " + curPkgInf.pkgType + " len " + curPkgInf.pkgLength);
 			pkgIndex++;
 		}
-		if (theBuf.readState.hasRemain()) {
+		if (theBuf.hasRemain()) {
 			logger.warn("has half package remains ");
 
 		}
@@ -59,18 +58,18 @@ public class DefaultMySQLStudySessionHandler extends DefaultDirectProxyHandler<M
 		ProxyBuffer peerBuf = session.frontBuffer;
 		SocketChannel peerChannel = session.frontChannel;
 		MySQLPackageInf curPkgInf = session.curBackendMSQLPackgInf;
-		if (readed == false || session.resolveMySQLPackage(peerBuf, curPkgInf,true) == false) {
+		if (readed == false ||
+				!CurrPacketType.Full.equals(session.resolveMySQLPackage(peerBuf, curPkgInf, true))) {
 			return;
 		}
 
-		if (peerBuf.readState.hasRemain()) {
+		if (peerBuf.hasRemain()) {
 			logger.warn("backend received multi packages !!!!! ");
 			processAllRemainPkg(session, peerBuf, curPkgInf);
 
 		}
 		// 透传给对端
 		peerBuf.changeOwner(true);
-		peerBuf.flip();
 		session.writeToChannel(peerBuf, peerChannel);
 		return;
 	}

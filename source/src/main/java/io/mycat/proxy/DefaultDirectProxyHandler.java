@@ -79,7 +79,6 @@ public class DefaultDirectProxyHandler<T extends UserProxySession> implements Fr
 		if (readed) {
 			// 如果读到数据,修改NIO事件，自己不再读数据，对方则感兴趣写数据。
 			userSession.frontBuffer.changeOwner(false);
-			userSession.frontBuffer.flip();
 			userSession.modifySelectKey();
 		}
 	}
@@ -89,7 +88,6 @@ public class DefaultDirectProxyHandler<T extends UserProxySession> implements Fr
 		if (readed) {
 			// 如果读到数据,修改NIO事件，自己不再读数据，对方则感兴趣写数据。
 			userSession.frontBuffer.changeOwner(true);
-			userSession.frontBuffer.flip();
 			userSession.modifySelectKey();
 		}
 
