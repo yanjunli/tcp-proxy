@@ -36,21 +36,17 @@ public class UserProxySession extends AbstractSession {
 	public boolean readFromChannel(ProxyBuffer proxyBuf, SocketChannel channel) throws IOException {
 
 		ByteBuffer buffer = proxyBuf.getBuffer();
-		buffer.limit(proxyBuf.writeState.optLimit);
-		buffer.position(proxyBuf.writeState.optPostion);
+		proxyBuf.compact();
 		int readed = channel.read(buffer);
-		logger.debug(" readed {} total bytes ,channel {}", readed, channel);
-		proxyBuf.writeState.curOptedLength = readed;
-		if (readed > 0) {
-			proxyBuf.writeState.optPostion += readed;
-			proxyBuf.writeState.optedTotalLength += readed;
-			proxyBuf.readState.optLimit = proxyBuf.writeState.optPostion;
-		} else if (readed == -1) {
+		logger.debug(" readed {} total bytes ", readed);
+		if (readed == -1) {
 			logger.warn("Read EOF ,socket closed ");
 			throw new ClosedChannelException();
 		} else if (readed == 0) {
+
 			logger.warn("readed zero bytes ,Maybe a bug ,please fix it !!!!");
 		}
+		proxyBuf.writeIndex = buffer.position();
 		return readed > 0;
 	}
 
@@ -61,31 +57,62 @@ public class UserProxySession extends AbstractSession {
 	 */
 	public void writeToChannel(ProxyBuffer proxyBuf, SocketChannel channel) throws IOException {
 		ByteBuffer buffer = proxyBuf.getBuffer();
-		BufferOptState readState = proxyBuf.readState;
-		BufferOptState writeState = proxyBuf.writeState;
-		buffer.position(readState.optPostion);
-		buffer.limit(readState.optLimit);
+		buffer.position(0);
+		buffer.limit(proxyBuf.readIndex);
 		int writed = channel.write(buffer);
-		readState.curOptedLength = writed;
-		readState.optPostion += writed;
-		readState.optedTotalLength += writed;
-		if (buffer.remaining() == 0) {
-			if (writeState.optPostion > buffer.position()) {
-				// 当前Buffer中写入的数据多于透传出去的数据，因此透传并未完成
-				// compact buffer to head
-				buffer.limit(writeState.optPostion);
-				buffer.compact();
-				readState.optPostion = 0;
-				readState.optLimit = buffer.position();
-				writeState.optPostion = buffer.position();
-				// 继续从对端Socket读数据
-			} else {
-				// 数据彻底写完，切换为读模式，对端读取数据
-				proxyBuf.changeOwner(!proxyBuf.frontUsing());
-				proxyBuf.flip();
+		if(writed ==0||buffer.hasRemaining()){
+			/**
+			 * 1. writed==0 或者  buffer 中数据没有写完时,注册可写事件
+			 *    通常发生在网络阻塞或者 客户端  COM_STMT_FETCH 命令可能会 出现没有写完或者 writed == 0 的情况
+			 */
+			keepWrite(channel);
+			logger.debug("register OP_WRITE  selectkey .write  {} bytes. current channel is {}",writed,channel);
+			int readindex = proxyBuf.readIndex - writed;
+			proxyBuf.readIndex = writed;
+			proxyBuf.compact();
+			proxyBuf.readIndex = readindex;
+			return;
+		}else{
+			logger.debug("writeToChannel write  {} bytes ",writed);
+			//从写状态切换到读状态时,需要检查对端 是否有注册可读事件
+			changeToReadState(channel);
+		}
+	}
+	
+	/**
+	 * 没有写完.或socket buffer 满了。。。注册可写事件.取消对端可读事件
+	 * @param channel
+	 * @throws IOException
+	 */
+	private void keepWrite(SocketChannel channel)throws IOException{
+		SelectionKey theKey = channel.equals(frontChannel) ? frontKey : backendKey;
+		SelectionKey otherKey = channel.equals(frontChannel) ? backendKey : frontKey;
+		if((theKey.interestOps() & SelectionKey.OP_WRITE) ==0){
+			theKey.interestOps(theKey.interestOps() |SelectionKey.OP_WRITE );
+		}
+		if(otherKey!=null&&otherKey.isValid()){
+			otherKey.interestOps(otherKey.interestOps() & ~SelectionKey.OP_READ);
+		}
+	}
+	
+	/**
+	 * 从对端读数据到本端
+	 * 向对端注册可读事件
+	 * @param channel
+	 * @throws IOException
+	 */
+	private void changeToReadState(SocketChannel channel)throws ClosedChannelException{
+		SelectionKey theKey = channel.equals(frontChannel) ? frontKey : backendKey;
+		SelectionKey otherKey = channel.equals(frontChannel) ? backendKey : frontKey;
+		if((theKey.interestOps() & SelectionKey.OP_WRITE) > 0){
+			theKey.interestOps(theKey.interestOps() &~SelectionKey.OP_WRITE );
+		}
+		if (otherKey != null && otherKey.isValid()) {
+			int oldOps = otherKey.interestOps();
+			if ( ( oldOps & SelectionKey.OP_READ ) == 0) {
+				otherKey.interestOps(oldOps|SelectionKey.OP_READ);
 			}
 		}
-		this.modifySelectKey();
 	}
 
 	/**

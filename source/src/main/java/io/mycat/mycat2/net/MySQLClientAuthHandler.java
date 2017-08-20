@@ -3,6 +3,7 @@ package io.mycat.mycat2.net;
 import java.io.IOException;
 
 import io.mycat.mycat2.MySQLSession;
+import io.mycat.mycat2.MySQLSession.CurrPacketType;
 import io.mycat.mysql.packet.AuthPacket;
 import io.mycat.proxy.DefaultDirectProxyHandler;
 import io.mycat.proxy.ProxyBuffer;
@@ -24,7 +25,8 @@ public class MySQLClientAuthHandler extends DefaultDirectProxyHandler<MySQLSessi
 	public void onFrontRead(MySQLSession session) throws IOException {
 		boolean readed = session.readFromChannel(session.frontBuffer, session.frontChannel);
 		ProxyBuffer backendBuffer = session.frontBuffer;
-		if (readed == false || session.resolveMySQLPackage(backendBuffer, session.curFrontMSQLPackgInf,false) == false) {
+		if (readed == false || 
+				!CurrPacketType.Full.equals(session.resolveMySQLPackage(backendBuffer, session.curFrontMSQLPackgInf, false))) {
 			return;
 		}
 		//处理用户认证请情况报文
