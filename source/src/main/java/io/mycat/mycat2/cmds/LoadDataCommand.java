@@ -178,5 +178,4 @@ public class LoadDataCommand implements SQLCommand {
 		}
 		return false;
 	}
-	
 }
