@@ -1,13 +1,19 @@
 package io.mycat.mycat2.sqlparser;
 
+import java.util.Arrays;
+
 import io.mycat.mycat2.sqlparser.SQLParseUtils.HashArray;
 import io.mycat.mycat2.sqlparser.byteArrayInterface.ByteArrayInterface;
 import io.mycat.mycat2.sqlparser.byteArrayInterface.TokenizerUtil;
 
-import java.util.Arrays;
-
 /**
- * Created by Fanfan on 2017/3/21.
+ * <pre>
+ * Created by Kaiz on 2017/3/21.
+ * 2017/11/25: sqlInfo 结构调整如下：
+ * 63.............................................................0
+ * |------14------|---8---|---8---|-----14-----|----12----|---8---|
+ *   preHashPos    realSQL SQLType   SQLSize     TBLStart  TBLCount
+ * </pre>
  */
 public class BufferSQLContext {
     //DDL
@@ -84,7 +90,7 @@ public class BufferSQLContext {
     public static final byte ANNOTATION_REPLICA_NAME = 10;
 
     private short[] tblResult;  //记录格式：[{schema hash array index(defaults 0), tbl hash array index}]
-    private short[] sqlInfoArray;  //用于记录sql索引，用于支持sql批量提交，格式 [{hash array start pos, sql type(15-5 hash array real sql offset, 4-0 sql type), tblResult start pos, tblResult count}]
+    private long[] sqlInfoArray;  //用于记录sql索引，用于支持sql批量提交，格式 [{hash array start pos, sql type(15-5 hash array real sql offset, 4-0 sql type), tblResult start pos, tblResult count}]
     private byte totalTblCount;
     private int[] annotationCondition;
     private int[] selectItemArray;
@@ -115,7 +121,7 @@ public class BufferSQLContext {
 
     public BufferSQLContext() {
         tblResult = new short[tblResultArraySize];
-        sqlInfoArray = new short[512];
+        sqlInfoArray = new long[256];
         annotationValue = new long[16];
         annotationStringValue = new String[16];
         annotationCondition=new int[64];
@@ -130,7 +136,7 @@ public class BufferSQLContext {
         tblResultPos = 0;
         schemaResultPos = 2;
         Arrays.fill(tblResult, (short) 0);
-        Arrays.fill(sqlInfoArray, (short) 0);
+        Arrays.fill(sqlInfoArray, 0L);
         sqlHash = 0;
         sqlType = 0;
         annotationType = 0;
@@ -181,11 +187,11 @@ public class BufferSQLContext {
     }
 
     public long getTokenType(int sqlIdx, int sqlPos) {
-        return hashArray.getType(sqlInfoArray[sqlIdx << 2] + sqlPos);
+        return hashArray.getType( (int)(sqlInfoArray[sqlIdx] >>> 50) + sqlPos);
     }
 
     public long getTokenHash(int sqlIdx, int sqlPos) {
-        return hashArray.getHash(sqlInfoArray[sqlIdx << 2] + sqlPos);
+        return hashArray.getHash( (int)(sqlInfoArray[sqlIdx] >>> 50) + sqlPos);
     }
 
     public long getSchemaHash(int idx) {
@@ -208,9 +214,12 @@ public class BufferSQLContext {
     public String getSQLTableName(int sqlIdx, int tblIdx) {
         //int tblResultIdx = sqlInfoArray[(sqlIdx<<2)+2];
         if (sqlIdx < totalSQLCount) {
-            int sqlInfoOffset = (sqlIdx << 2) + 3;
-            int tblResultOffset = sqlInfoArray[sqlInfoOffset] >>> 8;
-            int tblResultCount = sqlInfoArray[sqlInfoOffset] & 0xFF;
+            // int sqlInfoOffset = (sqlIdx << 2) + 3;
+            // int tblResultOffset = sqlInfoArray[sqlInfoOffset] >>> 8;
+            // int tblResultCount = sqlInfoArray[sqlInfoOffset] & 0xFF;
+            int sqlInfo = (int)sqlInfoArray[sqlIdx];
+            int tblResultOffset = (sqlInfo >>> 8) & 0xFFF;
+            int tblResultCount = sqlInfo & 0xFF;
             if (tblIdx < tblResultCount) {
                 int hashArrayIdx = tblResult[tblResultOffset + (tblIdx << 1) + 1];
                 int pos = hashArray.getPos(hashArrayIdx);
@@ -231,12 +240,15 @@ public class BufferSQLContext {
 
             totalSQLCount++;
 
-            int idx = curSQLIdx << 2;
+            int idx = curSQLIdx;
             curSQLIdx++;
-            sqlInfoArray[idx++] = (short) preHashArrayPos;
-            sqlInfoArray[idx++] = (short) ((hashArrayRealSQLOffset << 6) | sqlType);
-            sqlInfoArray[idx++] = (short) sqlSize;
-            sqlInfoArray[idx] = (short) ((preTableResultPos << 8) | curSQLTblCount);
+            long sqlInfo = ((long)preHashArrayPos & 0x3FFF) << 50;
+            sqlInfo |= ((long)hashArrayRealSQLOffset & 0xFF) << 42;
+            sqlInfo |= ((long)sqlType & 0xFF) << 34 ;
+            sqlInfo |= ((long)sqlSize & 0x3FFF) << 20;
+            sqlInfo |= ((long)preTableResultPos & 0xFFF) << 8;
+            sqlInfo |= (long)(curSQLTblCount & 0xFF);
+            sqlInfoArray[idx] = sqlInfo;
             curSQLTblCount = 0;
             preTableResultPos = tblResultPos;
             preHashArrayPos = curHashPos;
@@ -253,7 +265,7 @@ public class BufferSQLContext {
 
     public int getSQLTblCount(int sqlIdx) {
         if (sqlIdx < totalSQLCount) {
-            return sqlInfoArray[(sqlIdx << 2) + 3] & 0xFF;
+            return (int)sqlInfoArray[sqlIdx] & 0xFF;
         }
         return 0;
     }
@@ -276,11 +288,11 @@ public class BufferSQLContext {
     }
 
     public byte getSQLType() {
-        return (byte) (this.sqlInfoArray[1] & 0x3F);
+        return (byte) ((this.sqlInfoArray[0]>>34) & 0xFF);
     }
 
     public byte getSQLType(int sqlIdx) {
-        return (byte) (this.sqlInfoArray[(sqlIdx << 2) + 1] & 0x3F);
+        return (byte)((this.sqlInfoArray[sqlIdx]>>34) & 0xFF);
     }
 
     public byte getCurSQLType() {
@@ -292,12 +304,18 @@ public class BufferSQLContext {
     }
 
     public int getRealSQLOffset(int sqlIdx) {
-        int hashArrayOffset = sqlInfoArray[(sqlIdx << 2) + 1] >>> 6;
+        int hashArrayOffset = 0;
+        if (sqlIdx <= 0) {
+            hashArrayOffset = (int) (sqlInfoArray[sqlIdx] >> 42) & 0xFF;
+        } else {
+            hashArrayOffset = (int) (sqlInfoArray[sqlIdx] >> 50) & 0x3FFF;
+        }
         return hashArray.getPos(hashArrayOffset);
     }
 
     public int getRealSQLSize(int sqlIdx) {
-        int hashArrayEndPos = sqlInfoArray[(sqlIdx << 2) + 2] - 1;
+        int hashArrayEndPos = ((int) (sqlInfoArray[sqlIdx] >> 50) & 0x3FFF)
+                + ((int) (sqlInfoArray[sqlIdx] >> 20) & 0x3FFF) - 1;
         return hashArray.getPos(hashArrayEndPos) + hashArray.getSize(hashArrayEndPos);
     }
 
